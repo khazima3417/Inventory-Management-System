@@ -1,0 +1,88 @@
+REJECTED: Duplicate transaction ID.
+--- EXPIRY REPORT ---
+Lahore Branch | BAT001 | Panadol | Qty: 20 | Expiring Soon
+Lahore Branch | BAT002 | Panadol | Qty: 30 | Safe
+Islamabad Branch | BAT003 | Vitamin C | Qty: 10 | Critical
+---LOW STOCK / REORDER REPORT ---
+Lahore Branch:
+Islamabad Branch:
+Karachi Branch:
+Low-stock product entries: 0
+--- STOCK VALUATION ---
+Lahore Branch: Cost=11900, Potential Sales=18500, Potential Profit=6600
+Islamabad Branch: Cost=11100, Potential Sales=17000, Potential Profit=5900
+Karachi Branch: Cost=18050, Potential Sales=28000, Potential Profit=9950
+Company totals: units=580, cost=41050, potential sales=63500, potential profit=22450
+--- SALES ANALYTICS ---
+Revenue: 1750 | Cost of sold goods: 975 | Gross profit: 775
+Total units sold: 30
+Best-selling product: Face Mask
+Worst-selling product: Panadol
+Highest-revenue product: Face Mask
+Highest-profit product: Face Mask
+Highest-revenue branch: Karachi Branch
+--- INVENTORY RECONCILIATION ---
+Lahore Branch | Panadol | System: 40 | Physical: 43 | Difference: 3 | EXCESS
+Lahore Branch | Vitamin C | System: 20 | Physical: 20 | Difference: 0 | MATCHED
+Lahore Branch | Hand Sanitizer | System: 15 | Physical: 14 | Difference: -1 | SHORTAGE
+Lahore Branch | Face Mask | System: 100 | Physical: 100 | Difference: 0 | MATCHED
+Totals: {'MATCHED': 2, 'SHORTAGE': 1, 'EXCESS': 1}
+--- STOCK VALUATION ---
+Lahore Branch: Cost=11900, Potential Sales=18500, Potential Profit=6600
+Islamabad Branch: Cost=11100, Potential Sales=17000, Potential Profit=5900
+Karachi Branch: Cost=18050, Potential Sales=28000, Potential Profit=9950
+Company totals: units=580, cost=41050, potential sales=63500, potential profit=22450
+--- SALES ANALYTICS ---
+Revenue: 1750 | Cost of sold goods: 975 | Gross profit: 775
+Total units sold: 30
+Best-selling product: Face Mask
+Worst-selling product: Panadol
+Highest-revenue product: Face Mask
+Highest-profit product: Face Mask
+Highest-revenue branch: Karachi Branch
+---LOW STOCK / REORDER REPORT ---
+Lahore Branch:
+Islamabad Branch:
+Karachi Branch:
+Low-stock product entries: 0
+--- INVENTORY RECONCILIATION ---
+Lahore Branch | Panadol | System: 40 | Physical: 43 | Difference: 3 | EXCESS
+Lahore Branch | Vitamin C | System: 20 | Physical: 20 | Difference: 0 | MATCHED
+Lahore Branch | Hand Sanitizer | System: 15 | Physical: 14 | Difference: -1 | SHORTAGE
+Lahore Branch | Face Mask | System: 100 | Physical: 100 | Difference: 0 | MATCHED
+Totals: {'MATCHED': 2, 'SHORTAGE': 1, 'EXCESS': 1}
+INVENTORY MANAGEMENT DASHBOARD
+Branches: 3
+Products: 4
+Transactions
+Processed this session: 1
+Successful this session: 0
+Rejected this session: 1
+Inventory
+Total Units: 580
+Inventory Cost Value: 41050
+Potential Sales Value: 63500
+Potential Profit: 22450
+Sales
+Revenue: 1750
+Cost: 975
+Gross Profit: 775
+Top Product: Face Mask
+Top Branch: Karachi Branch
+Stock Alerts
+Low Stock Entries: 0
+Critical Expiry Batches: 1
+Expired Batches: 0
+Reconciliation
+Matched: 2
+Shortage: 1
+Excess: 1
+REJECTED: Duplicate transaction ID.
+.REJECTED: Invalid product.
+.SUCCESS: TEST-PURCHASE - purchase
+.REJECTED: Insufficient stock. Available: 40, requested: 999.
+.SUCCESS: TEST-SALE - sale
+.REJECTED: Source and destination branches cannot be the same.
+.SUCCESS: TEST-SAVE - purchase
+.SUCCESS: TEST-TRANSFER - transfer
+.REJECTED: Quantity must be greater than zero.

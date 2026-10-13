@@ -1,0 +1,123 @@
+{
+    "products": {
+        "P001": {
+            "name": "Panadol",
+            "category": "Medicine",
+            "price": 100,
+            "cost": 70,
+            "reorder_level": 10
+        },
+        "P002": {
+            "name": "Vitamin C",
+            "category": "Supplement",
+            "price": 250,
+            "cost": 180,
+            "reorder_level": 5
+        },
+        "P003": {
+            "name": "Hand Sanitizer",
+            "category": "Personal Care",
+            "price": 300,
+            "cost": 200,
+            "reorder_level": 8
+        },
+        "P004": {
+            "name": "Face Mask",
+            "category": "Personal Care",
+            "price": 50,
+            "cost": 25,
+            "reorder_level": 20
+        }
+    },
+    "branches": {
+        "B001": {
+            "name": "Lahore Branch",
+            "inventory": {
+                "P001": 40,
+                "P002": 20,
+                "P003": 15,
+                "P004": 100
+            }
+        },
+        "B002": {
+            "name": "Islamabad Branch",
+            "inventory": {
+                "P001": 40,
+                "P002": 10,
+                "P003": 25,
+                "P004": 60
+            }
+        },
+        "B003": {
+            "name": "Karachi Branch",
+            "inventory": {
+                "P001": 70,
+                "P002": 30,
+                "P003": 20,
+                "P004": 150
+            }
+        }
+    },
+    "transactions": [
+        {
+            "id": "T001",
+            "type": "sale",
+            "branch": "B001",
+            "product": "P001",
+            "quantity": 5
+        },
+        {
+            "id": "T002",
+            "type": "purchase",
+            "branch": "B002",
+            "product": "P002",
+            "quantity": 20
+        },
+        {
+            "id": "T003",
+            "type": "sale",
+            "branch": "B003",
+            "product": "P004",
+            "quantity": 25
+        },
+        {
+            "id": "T004",
+            "type": "transfer",
+            "from_branch": "B001",
+            "to_branch": "B002",
+            "product": "P001",
+            "quantity": 10
+        }
+    ],
+    "batches": [
+        {
+            "batch": "BAT001",
+            "product": "P001",
+            "branch": "B001",
+            "quantity": 20,
+            "expiry_days": 15
+        },
+        {
+            "batch": "BAT002",
+            "product": "P001",
+            "branch": "B001",
+            "quantity": 30,
+            "expiry_days": 120
+        },
+        {
+            "batch": "BAT003",
+            "product": "P002",
+            "branch": "B002",
+            "quantity": 10,
+            "expiry_days": 5
+        }
+    ],
+    "physical_stock": {
+        "B001": {
+            "P001": 43,
+            "P002": 20,
+            "P003": 14,
+            "P004": 100
+        }
+    }
+}
