@@ -1,8 +1,11 @@
+"""Tests for InventoryManager."""
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
-from inventory_management import InventoryManager
+from inventory_management import InventoryManager, InventoryError
 class InventoryManagerTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -12,34 +15,35 @@ class InventoryManagerTests(unittest.TestCase):
         self.manager = InventoryManager(self.data_file)
     def tearDown(self):
         self.temp_dir.cleanup()
+    def transaction(self, transaction_id="TEST-1", kind="sale", branch="B001", product="P001", quantity=1, **extra):
+        item = {"id": transaction_id, "type": kind, "branch": branch,
+                "product": product, "quantity": quantity}
+        item.update(extra)
+        return item
     def test_sale_reduces_stock(self):
         before = self.manager.branches["B001"]["inventory"]["P001"]
-        result = self.manager.process_transaction({
-            "id": "TEST-SALE", "type": "sale", "branch": "B001",
-            "product": "P001", "quantity": 2
-        })
+        result = self.manager.process_transaction(self.transaction(quantity=2))
         self.assertEqual(result["status"], "SUCCESS")
         self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], before - 2)
     def test_sale_cannot_make_stock_negative(self):
         before = self.manager.branches["B001"]["inventory"]["P001"]
-        result = self.manager.process_transaction({
-            "id": "TEST-TOO-MUCH", "type": "sale", "branch": "B001",
-            "product": "P001", "quantity": 999
-        })
+        result = self.manager.process_transaction(self.transaction("TEST-TOO-MUCH", quantity=999))
         self.assertEqual(result["status"], "REJECTED")
         self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], before)
-    def test_duplicate_id_rejected(self):
-        result = self.manager.process_transaction({
-            "id": "T001", "type": "sale", "branch": "B001",
-            "product": "P001", "quantity": 1
-        })
+        self.assertIn("Available", result["reason"])
+        self.assertIn("requested", result["reason"])
+    def test_duplicate_id_rejected_without_adding_duplicate(self):
+        before_count = len(self.manager.transactions)
+        result = self.manager.process_transaction(self.transaction("T001"))
         self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("Duplicate", result["reason"])
+        self.assertEqual(len(self.manager.transactions), before_count)
     def test_transfer_updates_both_branches(self):
         source_before = self.manager.branches["B001"]["inventory"]["P001"]
-        dest_before = self.manager.branches["B002"]["inventory"]["P001"]
+        dest_before = self.manager.branches["B002"]["inventory"].get("P001", 0)
         result = self.manager.process_transaction({
             "id": "TEST-TRANSFER", "type": "transfer", "from_branch": "B001",
-            "to_branch": "B002", "product": "P001", "quantity": 3
+            "to_branch": "B002", "product": "P001", "quantity": 3,
         })
         self.assertEqual(result["status"], "SUCCESS")
         self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], source_before - 3)
@@ -47,36 +51,125 @@ class InventoryManagerTests(unittest.TestCase):
     def test_same_branch_transfer_rejected(self):
         result = self.manager.process_transaction({
             "id": "TEST-SAME", "type": "transfer", "from_branch": "B001",
-            "to_branch": "B001", "product": "P001", "quantity": 1
+            "to_branch": "B001", "product": "P001", "quantity": 1,
         })
         self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("same", result["reason"])
+    def test_transfer_insufficient_stock_does_not_change_either_branch(self):
+        source_before = self.manager.branches["B001"]["inventory"]["P001"]
+        dest_before = self.manager.branches["B002"]["inventory"].get("P001", 0)
+        result = self.manager.process_transaction({
+            "id": "TEST-TRANSFER-MORE", "type": "transfer", "from_branch": "B001",
+            "to_branch": "B002", "product": "P001", "quantity": 999,
+        })
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], source_before)
+        self.assertEqual(self.manager.branches["B002"]["inventory"].get("P001", 0), dest_before)
     def test_invalid_product_rejected(self):
-        result = self.manager.process_transaction({
-            "id": "TEST-PRODUCT", "type": "sale", "branch": "B001",
-            "product": "P999", "quantity": 1
-        })
+        result = self.manager.process_transaction(self.transaction("TEST-PRODUCT", product="P999"))
         self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("product", result["reason"].lower())
+    def test_invalid_branch_rejected(self):
+        result = self.manager.process_transaction(self.transaction("TEST-BRANCH", branch="B999"))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("branch", result["reason"].lower())
+    def test_invalid_transaction_type_rejected(self):
+        result = self.manager.process_transaction(self.transaction("TEST-TYPE", kind="adjustment"))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("type", result["reason"].lower())
     def test_zero_quantity_rejected(self):
-        result = self.manager.process_transaction({
-            "id": "TEST-ZERO", "type": "purchase", "branch": "B001",
-            "product": "P001", "quantity": 0
-        })
+        result = self.manager.process_transaction(self.transaction("TEST-ZERO", kind="purchase", quantity=0))
         self.assertEqual(result["status"], "REJECTED")
+    def test_negative_quantity_rejected(self):
+        result = self.manager.process_transaction(self.transaction("TEST-NEGATIVE", quantity=-2))
+        self.assertEqual(result["status"], "REJECTED")
+    def test_fractional_quantity_rejected(self):
+        result = self.manager.process_transaction(self.transaction("TEST-FRACTION", quantity=1.5))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("whole number", result["reason"])
+    def test_missing_transaction_fields_rejected(self):
+        result = self.manager.process_transaction({"id": "TEST-MISSING", "type": "sale"})
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("Missing field", result["reason"])
     def test_purchase_adds_stock(self):
         before = self.manager.branches["B001"]["inventory"]["P001"]
-        result = self.manager.process_transaction({
-            "id": "TEST-PURCHASE", "type": "purchase", "branch": "B001",
-            "product": "P001", "quantity": 4
-        })
+        result = self.manager.process_transaction(self.transaction("TEST-PURCHASE", kind="purchase", quantity=4))
         self.assertEqual(result["status"], "SUCCESS")
         self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], before + 4)
+    def test_supplier_return_cannot_exceed_stock(self):
+        before = self.manager.branches["B001"]["inventory"]["P001"]
+        result = self.manager.process_transaction(self.transaction("TEST-SUPPLIER", kind="supplier_return", quantity=999))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], before)
+    def test_customer_return_cannot_exceed_original_sale(self):
+        before = self.manager.branches["B001"]["inventory"]["P001"]
+        result = self.manager.process_transaction(self.transaction("TEST-RETURN", kind="customer_return", quantity=6))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], before)
+    def test_customer_return_within_original_sale_is_accepted(self):
+        before = self.manager.branches["B001"]["inventory"]["P001"]
+        result = self.manager.process_transaction(self.transaction("TEST-RETURN-OK", kind="customer_return", quantity=2))
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], before + 2)
     def test_save_and_reload(self):
-        self.manager.process_transaction({
-            "id": "TEST-SAVE", "type": "purchase", "branch": "B001",
-            "product": "P001", "quantity": 1
-        })
+        self.manager.process_transaction(self.transaction("TEST-SAVE", kind="purchase", quantity=1))
         self.manager.save_data()
         reloaded = InventoryManager(self.data_file)
-        self.assertTrue(any(t["id"] == "TEST-SAVE" for t in reloaded.transactions))
+        self.assertTrue(any(t.get("id") == "TEST-SAVE" for t in reloaded.transactions))
+        self.assertEqual(reloaded.branches["B001"]["inventory"]["P001"], 41)
+    def test_empty_sales_analytics_does_not_crash(self):
+        self.manager.transactions = []
+        with redirect_stdout(StringIO()):
+            report = self.manager.sales_analytics()
+        self.assertEqual(report["revenue"], 0)
+        self.assertEqual(report["units"], 0)
+
+    def test_empty_batches_report_does_not_crash(self):
+        self.manager.batches = []
+        with redirect_stdout(StringIO()):
+            report = self.manager.product_expiry()
+        self.assertEqual(report, [])
+
+    def test_unknown_batch_is_reported_without_crash(self):
+        self.manager.batches = [{"batch": "BAT-UNKNOWN", "product": "P999", "branch": "B001", "expiry_days": 3}]
+        with redirect_stdout(StringIO()):
+            report = self.manager.product_expiry()
+        self.assertIn("unknown product or branch", report[0]["status"])
+
+    def test_duplicate_batch_id_is_reported(self):
+        self.manager.batches = [
+            {"batch": "DUP", "product": "P001", "branch": "B001", "expiry_days": 5},
+            {"batch": "DUP", "product": "P002", "branch": "B002", "expiry_days": 10},
+        ]
+        with redirect_stdout(StringIO()):
+            report = self.manager.product_expiry()
+        self.assertIn("duplicate batch ID", report[1]["status"])
+    def test_missing_file_raises_clear_inventory_error(self):
+        missing = Path(self.temp_dir.name) / "missing.json"
+        with self.assertRaises(InventoryError):
+            InventoryManager(missing)
+    def test_invalid_json_raises_clear_inventory_error(self):
+        self.data_file.write_text("{invalid json", encoding="utf-8")
+        with self.assertRaises(InventoryError):
+            InventoryManager(self.data_file)
+    def test_non_dictionary_transaction_is_rejected_without_crash(self):
+        result = self.manager.process_transaction(["not", "a", "dictionary"])
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn("dictionary", result["reason"].lower())
+    def test_nan_quantity_is_rejected(self):
+        result = self.manager.process_transaction(self.transaction("TEST-NAN", quantity=float("nan")))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], 40)
+    def test_boolean_quantity_is_rejected(self):
+        result = self.manager.process_transaction(self.transaction("TEST-BOOL", quantity=True))
+        self.assertEqual(result["status"], "REJECTED")
+    def test_reconciliation_ignores_invalid_nan_stock(self):
+        with redirect_stdout(StringIO()):
+            report = self.manager.reconcile_inventory({"B001": {"P001": float("nan")}})
+        self.assertEqual(report, {"MATCHED": 0, "SHORTAGE": 0, "EXCESS": 0})
+    def test_dashboard_and_reports_work_with_empty_transactions(self):
+        self.manager.transactions = []
+        with redirect_stdout(StringIO()):
+            self.manager.dashboard()
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

@@ -1,0 +1,36 @@
+ INVENTORY MANAGEMENT DASHBOARD  
+Branches: 3
+Products: 4
+Transactions | Processed: 4 | Successful: 4 | Rejected: 0
+----- STOCK VALUATION -----
+Branch: Lahore Branch | Cost: $11900.00 | Sales: $18500.00 | Profit: $6600.00
+Branch: Islamabad Branch | Cost: $11100.00 | Sales: $17000.00 | Profit: $5900.00
+Branch: Karachi Branch | Cost: $18050.00 | Sales: $28000.00 | Profit: $9950.00
+Company totals | Units: 580 | Cost: $41050.00 | Sales: $63500.00 | Profit: $22450.00
+----- SALES ANALYTICS -----
+Revenue: $1750.00 | Cost: $975.00 | Gross profit: $775.00
+Total units sold: 30
+Best-selling product: Face Mask
+Worst-selling product: Panadol
+Highest-revenue product: Face Mask
+Highest-profit product: Face Mask
+Highest-revenue branch: Karachi Branch
+----- LOW STOCK / REORDER REPORT -----
+Branch: Lahore Branch
+Branch: Islamabad Branch
+Branch: Karachi Branch
+No products currently require reordering.
+----- PRODUCT EXPIRY REPORT -----
+Batch: BAT001 | Product: P001 | Branch: B001 | Days: 15 | Status: Expiring Soon
+Batch: BAT002 | Product: P001 | Branch: B001 | Days: 120 | Status: Safe
+Batch: BAT003 | Product: P002 | Branch: B002 | Days: 5 | Status: Critical
+----- INVENTORY RECONCILIATION -----
+Branch: Lahore Branch
+  Panadol | System: 40 | Physical: 43 | Difference: 3 | Status: EXCESS
+  Vitamin C | System: 20 | Physical: 20 | Difference: 0 | Status: MATCHED
+  Hand Sanitizer | System: 15 | Physical: 14 | Difference: -1 | Status: SHORTAGE
+  Face Mask | System: 100 | Physical: 100 | Difference: 0 | Status: MATCHED
+Reconciliation totals: {'MATCHED': 2, 'SHORTAGE': 1, 'EXCESS': 1}
+Expiry batches: 3 | Critical: 1 | Expired: 0
+Reconciliation: {'MATCHED': 2, 'SHORTAGE': 1, 'EXCESS': 1}
+Data saved successfully to data.json
