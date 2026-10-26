@@ -1,17 +1,20 @@
+----- DEMO TRANSACTIONS -----
+SUCCESS: Sale processed successfully.
+REJECTED: Insufficient stock. Available: 39, requested: 999999.
  INVENTORY MANAGEMENT DASHBOARD  
 Branches: 3
 Products: 4
-Transactions | Processed: 4 | Successful: 4 | Rejected: 0
+Transactions | Processed: 6 | Successful: 5 | Rejected: 1
 ----- STOCK VALUATION -----
-Branch: Lahore Branch | Cost: $11900.00 | Sales: $18500.00 | Profit: $6600.00
+Branch: Lahore Branch | Cost: $11830.00 | Sales: $18400.00 | Profit: $6570.00
 Branch: Islamabad Branch | Cost: $11100.00 | Sales: $17000.00 | Profit: $5900.00
 Branch: Karachi Branch | Cost: $18050.00 | Sales: $28000.00 | Profit: $9950.00
-Company totals | Units: 580 | Cost: $41050.00 | Sales: $63500.00 | Profit: $22450.00
+Company totals | Units: 579 | Cost: $40980.00 | Sales: $63400.00 | Profit: $22420.00
 ----- SALES ANALYTICS -----
-Revenue: $1750.00 | Cost: $975.00 | Gross profit: $775.00
-Total units sold: 30
+Revenue: $1850.00 | Cost: $1045.00 | Gross profit: $805.00
+Total units sold: 31
 Best-selling product: Face Mask
-Worst-selling product: Panadol
+Worst-selling product: Vitamin C
 Highest-revenue product: Face Mask
 Highest-profit product: Face Mask
 Highest-revenue branch: Karachi Branch
@@ -24,13 +27,25 @@ No products currently require reordering.
 Batch: BAT001 | Product: P001 | Branch: B001 | Days: 15 | Status: Expiring Soon
 Batch: BAT002 | Product: P001 | Branch: B001 | Days: 120 | Status: Safe
 Batch: BAT003 | Product: P002 | Branch: B002 | Days: 5 | Status: Critical
+----- BATCH / STOCK CHECK -----
+MISMATCH: B001/P001 | System: 39 | Batch total: 49
+MISMATCH: B001/P002 | System: 20 | Batch total: 0
+MISMATCH: B001/P003 | System: 15 | Batch total: 0
+MISMATCH: B001/P004 | System: 100 | Batch total: 0
+MISMATCH: B002/P001 | System: 40 | Batch total: 0
+MISMATCH: B002/P003 | System: 25 | Batch total: 0
+MISMATCH: B002/P004 | System: 60 | Batch total: 0
+MISMATCH: B003/P001 | System: 70 | Batch total: 0
+MISMATCH: B003/P002 | System: 30 | Batch total: 0
+MISMATCH: B003/P003 | System: 20 | Batch total: 0
+MISMATCH: B003/P004 | System: 150 | Batch total: 0
 ----- INVENTORY RECONCILIATION -----
 Branch: Lahore Branch
-  Panadol | System: 40 | Physical: 43 | Difference: 3 | Status: EXCESS
+  Panadol | System: 39 | Physical: 43 | Difference: 4 | Status: EXCESS
   Vitamin C | System: 20 | Physical: 20 | Difference: 0 | Status: MATCHED
   Hand Sanitizer | System: 15 | Physical: 14 | Difference: -1 | Status: SHORTAGE
   Face Mask | System: 100 | Physical: 100 | Difference: 0 | Status: MATCHED
 Reconciliation totals: {'MATCHED': 2, 'SHORTAGE': 1, 'EXCESS': 1}
 Expiry batches: 3 | Critical: 1 | Expired: 0
 Reconciliation: {'MATCHED': 2, 'SHORTAGE': 1, 'EXCESS': 1}
-Data saved successfully to data.json
+Demo changes are in memory only; data.json was not modified.

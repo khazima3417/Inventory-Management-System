@@ -171,5 +171,43 @@ class InventoryManagerTests(unittest.TestCase):
         self.manager.transactions = []
         with redirect_stdout(StringIO()):
             self.manager.dashboard()
+
+    def test_nan_rejection_can_be_saved_without_corrupting_json(self):
+        self.manager.process_transaction(self.transaction("TEST-NAN-SAVE", quantity=float("nan")))
+        self.manager.save_data()
+        with self.data_file.open("r", encoding="utf-8") as file:
+            saved = json.load(file)
+        rejected = next(item for item in saved["transactions"] if item.get("id") == "TEST-NAN-SAVE")
+        self.assertEqual(rejected["quantity"], "nan")
+
+    def test_rejected_transaction_id_can_be_reused(self):
+        first = self.manager.process_transaction(self.transaction("RETRY-ME", quantity=999))
+        second = self.manager.process_transaction(self.transaction("RETRY-ME", quantity=1))
+        self.assertEqual(first["status"], "REJECTED")
+        self.assertEqual(second["status"], "SUCCESS")
+
+    def test_customer_returns_reduce_net_sales_analytics(self):
+        self.manager.transactions = []
+        with redirect_stdout(StringIO()):
+            self.manager.process_transaction(self.transaction("RETURN-SALE", quantity=5))
+            self.manager.process_transaction(self.transaction(
+                "RETURN-BACK", kind="customer_return", quantity=5
+            ))
+            report = self.manager.sales_analytics()
+        self.assertEqual(report["revenue"], 0)
+        self.assertEqual(report["units"], 0)
+
+    def test_historical_sales_keep_transaction_time_price(self):
+        self.manager.transactions = []
+        self.manager.process_transaction(self.transaction("PRICE-SALE", quantity=2))
+        self.manager.products["P001"]["price"] = 999
+        with redirect_stdout(StringIO()):
+            report = self.manager.sales_analytics()
+        self.assertEqual(report["revenue"], 200)
+
+    def test_whole_number_float_quantity_is_stored_as_integer(self):
+        result = self.manager.process_transaction(self.transaction("WHOLE-FLOAT", kind="purchase", quantity=5.0))
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertIsInstance(result["quantity"], int)
 if __name__ == "__main__":
     unittest.main(verbosity=2)

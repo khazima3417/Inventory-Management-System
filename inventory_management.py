@@ -1,10 +1,32 @@
 import json
 import math
+import os
+from datetime import date, timedelta
 from pathlib import Path
 class InventoryError(Exception):
     """Base error for inventory operations."""
 class InventoryManager:
     """Manage products, branch stock, transactions, batches, and reports."""
+
+    @staticmethod
+    def _is_whole_number(value):
+        return (not isinstance(value, bool) and isinstance(value, (int, float))
+                and math.isfinite(value) and value >= 0 and float(value).is_integer())
+
+    @staticmethod
+    def _json_safe(value):
+        """Convert rejected raw input into JSON-safe values without losing the reason."""
+        if value is None or isinstance(value, (str, int, bool)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else repr(value)
+        if isinstance(value, dict):
+            return {str(k): InventoryManager._json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [InventoryManager._json_safe(v) for v in value]
+        if isinstance(value, (set, frozenset)):
+            return repr(value)
+        return repr(value)
     VALID_TYPES = {"sale", "purchase", "customer_return", "supplier_return", "transfer"}
     def __init__(self, data_file=None):
         self.data_file = Path(data_file) if data_file is not None else Path(__file__).with_name("data.json")
@@ -38,7 +60,11 @@ class InventoryManager:
         for product_id, product in data["products"].items():
             if not isinstance(product, dict):
                 raise InventoryError(f"Product '{product_id}' must contain a dictionary of details.")
+            if not isinstance(product.get("name"), str) or not product["name"].strip():
+                raise InventoryError(f"Product '{product_id}' must have a non-empty name.")
             for field in ("price", "cost", "reorder_level"):
+                if field not in product and field != "reorder_level":
+                    raise InventoryError(f"Product '{product_id}' is missing '{field}'.")
                 value = product.get(field, 0)
                 if (isinstance(value, bool) or not isinstance(value, (int, float))
                         or not math.isfinite(value) or value < 0):
@@ -53,12 +79,38 @@ class InventoryManager:
                 if product_id not in data["products"]:
                     raise InventoryError(f"Branch '{branch_id}' contains unknown product '{product_id}'.")
 
+        seen_transaction_ids = set()
         for index, transaction in enumerate(data["transactions"], start=1):
             if not isinstance(transaction, dict):
                 raise InventoryError(f"Transaction #{index} must be a dictionary.")
+            transaction_id = transaction.get("id")
+            if not isinstance(transaction_id, str) or not transaction_id.strip():
+                raise InventoryError(f"Transaction #{index} has an invalid ID.")
+            if transaction_id in seen_transaction_ids:
+                raise InventoryError(f"Duplicate stored transaction ID: {transaction_id}.")
+            seen_transaction_ids.add(transaction_id)
+            if transaction.get("status", "SUCCESS") == "SUCCESS":
+                product_id = transaction.get("product")
+                kind = transaction.get("type")
+                quantity = transaction.get("quantity")
+                if product_id not in data["products"] or kind not in self.VALID_TYPES:
+                    raise InventoryError(f"Stored transaction '{transaction_id}' has an invalid product or type.")
+                if not self._is_whole_number(quantity) or quantity <= 0:
+                    raise InventoryError(f"Stored transaction '{transaction_id}' has an invalid quantity.")
+                if kind == "transfer":
+                    if transaction.get("from_branch") not in data["branches"] or transaction.get("to_branch") not in data["branches"]:
+                        raise InventoryError(f"Stored transaction '{transaction_id}' has an invalid transfer branch.")
+                elif transaction.get("branch") not in data["branches"]:
+                    raise InventoryError(f"Stored transaction '{transaction_id}' has an invalid branch.")
+                # Snapshot legacy records once, so future price changes do not rewrite history.
+                product = data["products"][product_id]
+                transaction.setdefault("unit_price", product.get("price", 0))
+                transaction.setdefault("unit_cost", product.get("cost", 0))
         for index, batch in enumerate(data["batches"], start=1):
             if not isinstance(batch, dict):
                 raise InventoryError(f"Batch #{index} must be a dictionary.")
+            if "expiry_date" not in batch and isinstance(batch.get("expiry_days"), (int, float)) and not isinstance(batch.get("expiry_days"), bool):
+                batch["expiry_date"] = (date.today() + timedelta(days=int(batch["expiry_days"]))).isoformat()
         return data
     def save_data(self):
         self.data["products"] = self.products
@@ -66,10 +118,19 @@ class InventoryManager:
         self.data["transactions"] = self.transactions
         self.data["batches"] = self.batches
         self.data["physical_stock"] = self.physical_stock
+        temporary_file = self.data_file.with_name(self.data_file.name + ".tmp")
         try:
-            with self.data_file.open("w", encoding="utf-8") as file:
-                json.dump(self.data, file, indent=4, ensure_ascii=False, allow_nan=False)
+            with temporary_file.open("w", encoding="utf-8") as file:
+                json.dump(self._json_safe(self.data), file, indent=4,
+                          ensure_ascii=False, allow_nan=False)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary_file, self.data_file)
         except (OSError, TypeError, ValueError) as error:
+            try:
+                temporary_file.unlink(missing_ok=True)
+            except OSError:
+                pass
             raise InventoryError(f"Could not save inventory data: {error}") from error
     def validate_transaction(self, transaction):
         if not isinstance(transaction, dict):
@@ -81,7 +142,9 @@ class InventoryManager:
         transaction_id = transaction["id"]
         if not isinstance(transaction_id, str) or not transaction_id.strip():
             return "Transaction ID must be non-empty text."
-        if any(isinstance(item, dict) and item.get("id") == transaction_id for item in self.transactions):
+        if any(isinstance(item, dict) and item.get("id") == transaction_id
+               and item.get("status", "SUCCESS") == "SUCCESS"
+               for item in self.transactions):
             return "Duplicate transaction ID."
         kind = transaction["type"]
         if not isinstance(kind, str) or kind not in self.VALID_TYPES:
@@ -125,9 +188,14 @@ class InventoryManager:
         return self.branches[branch_id].setdefault("inventory", {}).get(product_id, 0)
     def _record_result(self, transaction, status, reason):
         """Store a transaction outcome once, including rejection reasons."""
-        saved = dict(transaction) if isinstance(transaction, dict) else {"transaction": transaction}
+        saved = self._json_safe(dict(transaction) if isinstance(transaction, dict)
+                                else {"transaction": transaction})
         saved["status"] = status
         saved["reason"] = reason
+        if status == "SUCCESS" and isinstance(saved.get("product"), str):
+            product = self.products.get(saved["product"], {})
+            saved["unit_price"] = product.get("price", 0)
+            saved["unit_cost"] = product.get("cost", 0)
         self.transactions.append(saved)
         print(f"{status}: {reason}")
         return saved
@@ -137,6 +205,7 @@ class InventoryManager:
             if isinstance(transaction_id, str) and transaction_id.strip():
                 already_exists = any(
                     isinstance(item, dict) and item.get("id") == transaction_id
+                    and item.get("status", "SUCCESS") == "SUCCESS"
                     for item in self.transactions
                 )
                 if not already_exists:
@@ -149,7 +218,8 @@ class InventoryManager:
             return self._reject(transaction, reason)
         kind = transaction["type"]
         product_id = transaction["product"]
-        quantity = transaction["quantity"]
+        quantity = int(transaction["quantity"])
+        transaction["quantity"] = quantity
 
         if kind == "transfer":
             return self.transfer(transaction, validated=True)
@@ -168,6 +238,8 @@ class InventoryManager:
                     transaction,
                     f"Return exceeds original sales. Maximum returnable: {remaining}, requested: {quantity}.",
                 )
+        if kind in {"sale", "supplier_return"}:
+            self._consume_batches(branch_id, product_id, quantity)
         inventory = self.branches[branch_id].setdefault("inventory", {})
         current = inventory.get(product_id, 0)
         if kind in {"purchase", "customer_return"}:
@@ -175,6 +247,22 @@ class InventoryManager:
         else:  
             inventory[product_id] = current - quantity
         return self._record_result(transaction, "SUCCESS", f"{kind.replace('_', ' ').title()} processed successfully.")
+
+    def _consume_batches(self, branch_id, product_id, quantity):
+        """Reduce tracked batches by earliest expiry first; leave untracked stock usable."""
+        candidates = [b for b in self.batches if b.get("branch") == branch_id
+                      and b.get("product") == product_id and self._is_whole_number(b.get("quantity"))]
+        tracked = sum(int(b.get("quantity", 0)) for b in candidates)
+        remaining = min(int(quantity), tracked)
+        candidates.sort(key=lambda b: (b.get("expiry_date", "9999-12-31"),
+                                       b.get("expiry_days", 999999)))
+        for batch in candidates:
+            if remaining <= 0:
+                break
+            available = int(batch.get("quantity", 0))
+            used = min(available, remaining)
+            batch["quantity"] = available - used
+            remaining -= used
 
     def transfer(self, transaction, validated=False):
         """Move stock atomically between two different branches."""
@@ -196,6 +284,22 @@ class InventoryManager:
         destination_inventory = self.branches[destination].setdefault("inventory", {})
         source_inventory[product_id] = available - quantity
         destination_inventory[product_id] = destination_inventory.get(product_id, 0) + quantity
+        remaining = quantity
+        candidates = [b for b in self.batches if b.get("branch") == source
+                      and b.get("product") == product_id and self._is_whole_number(b.get("quantity"))]
+        candidates.sort(key=lambda b: (b.get("expiry_date", "9999-12-31"), b.get("expiry_days", 999999)))
+        for batch in candidates:
+            if remaining <= 0:
+                break
+            moved = min(int(batch.get("quantity", 0)), remaining)
+            if moved:
+                batch["quantity"] = int(batch.get("quantity", 0)) - moved
+                copied = dict(batch)
+                copied["batch"] = f"{batch.get('batch', 'BATCH')}-{destination}-{len(self.batches) + 1}"
+                copied["branch"] = destination
+                copied["quantity"] = moved
+                self.batches.append(copied)
+                remaining -= moved
         return self._record_result(transaction, "SUCCESS", "Transfer processed successfully.")
     def remaining_returnable(self, product_id, branch_id=None):
         """Calculate successful sold units minus successful customer returns."""
@@ -239,6 +343,11 @@ class InventoryManager:
         for batch in self.batches:
             batch_id = batch.get("batch", "Unknown batch")
             product_id, branch_id, days = batch.get("product"), batch.get("branch"), batch.get("expiry_days")
+            if batch.get("expiry_date"):
+                try:
+                    days = (date.fromisoformat(batch["expiry_date"]) - date.today()).days
+                except (TypeError, ValueError):
+                    days = None
             if not isinstance(batch_id, str) or not batch_id.strip():
                 status = "INVALID: batch ID must be non-empty text"
             elif batch_id in seen_batch_ids:
@@ -307,48 +416,59 @@ class InventoryManager:
         print(f"Company totals | Units: {total_units} | Cost: ${company_cost:.2f} | Sales: ${company_sales:.2f} | Profit: ${company_sales - company_cost:.2f}")
         return summary
     def sales_analytics(self):
-        """Calculate sales analytics using successful historical sales only."""
+        """Calculate net sales after returns using prices recorded at transaction time."""
+        product_units = {pid: 0 for pid in self.products}
+        product_revenue = {pid: 0 for pid in self.products}
+        product_profit = {pid: 0 for pid in self.products}
+        branch_revenue = {bid: 0 for bid in self.branches}
         total_revenue = total_cost = total_units = 0
-        product_units, product_revenue, product_profit, branch_revenue = {}, {}, {}, {}
         for item in self.transactions:
-            if not isinstance(item, dict) or item.get("type") != "sale" or item.get("status", "SUCCESS") != "SUCCESS":
+            if not isinstance(item, dict) or item.get("status", "SUCCESS") != "SUCCESS":
                 continue
-            product_id, branch_id, quantity = item.get("product"), item.get("branch"), item.get("quantity", 0)
-            if product_id not in self.products or branch_id not in self.branches:
+            kind = item.get("type")
+            if kind not in {"sale", "customer_return"}:
                 continue
-            if isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or quantity <= 0:
+            product_id, branch_id = item.get("product"), item.get("branch")
+            quantity = item.get("quantity", 0)
+            if (product_id not in self.products or branch_id not in self.branches
+                    or not self._is_whole_number(quantity) or quantity <= 0):
                 continue
-            product = self.products[product_id]
-            revenue, cost = quantity * product.get("price", 0), quantity * product.get("cost", 0)
-            total_revenue += revenue
-            total_cost += cost
-            total_units += quantity
-            product_units[product_id] = product_units.get(product_id, 0) + quantity
-            product_revenue[product_id] = product_revenue.get(product_id, 0) + revenue
-            product_profit[product_id] = product_profit.get(product_id, 0) + revenue - cost
-            branch_revenue[branch_id] = branch_revenue.get(branch_id, 0) + revenue
+            sign = 1 if kind == "sale" else -1
+            price = item.get("unit_price", self.products[product_id].get("price", 0))
+            cost = item.get("unit_cost", self.products[product_id].get("cost", 0))
+            revenue_delta = sign * quantity * price
+            cost_delta = sign * quantity * cost
+            total_revenue += revenue_delta
+            total_cost += cost_delta
+            total_units += sign * quantity
+            product_units[product_id] += sign * quantity
+            product_revenue[product_id] += revenue_delta
+            product_profit[product_id] += revenue_delta - cost_delta
+            branch_revenue[branch_id] += revenue_delta
         print("----- SALES ANALYTICS -----")
         print(f"Revenue: ${total_revenue:.2f} | Cost: ${total_cost:.2f} | Gross profit: ${total_revenue - total_cost:.2f}")
         print(f"Total units sold: {total_units}")
-        result = {"revenue": total_revenue, "cost": total_cost, "gross_profit": total_revenue - total_cost,
-                  "units": total_units}
-        if not product_units:
-            print("No successful sales available for analytics.")
+        result = {"revenue": total_revenue, "cost": total_cost,
+                  "gross_profit": total_revenue - total_cost, "units": total_units}
+        if not self.products:
             return result
         best = max(product_units, key=product_units.get)
         worst = min(product_units, key=product_units.get)
         top_revenue = max(product_revenue, key=product_revenue.get)
         top_profit = max(product_profit, key=product_profit.get)
-        top_branch = max(branch_revenue, key=branch_revenue.get)
+        top_branch = max(branch_revenue, key=branch_revenue.get) if branch_revenue else None
         result.update({"best_product": best, "worst_product": worst,
-                       "highest_revenue_product": top_revenue, "highest_profit_product": top_profit,
+                       "highest_revenue_product": top_revenue,
+                       "highest_profit_product": top_profit,
                        "highest_revenue_branch": top_branch})
         print(f"Best-selling product: {self.products[best].get('name', best)}")
         print(f"Worst-selling product: {self.products[worst].get('name', worst)}")
         print(f"Highest-revenue product: {self.products[top_revenue].get('name', top_revenue)}")
         print(f"Highest-profit product: {self.products[top_profit].get('name', top_profit)}")
-        print(f"Highest-revenue branch: {self.branches[top_branch].get('name', top_branch)}")
+        if top_branch is not None:
+            print(f"Highest-revenue branch: {self.branches[top_branch].get('name', top_branch)}")
         return result
+
     def reconcile_inventory(self, physical_stock=None):
         physical_stock = self.physical_stock if physical_stock is None else physical_stock
         counts = {"MATCHED": 0, "SHORTAGE": 0, "EXCESS": 0}
@@ -378,8 +498,31 @@ class InventoryManager:
                 status = "MATCHED" if difference == 0 else "SHORTAGE" if difference < 0 else "EXCESS"
                 counts[status] += 1
                 print(f"  {self.products[product_id].get('name', product_id)} | System: {system} | Physical: {physical} | Difference: {difference} | Status: {status}")
+            for product_id in self.products:
+                if product_id not in physical_products:
+                    print(f"  NOT COUNTED: {self.products[product_id].get('name', product_id)} | System: {inventory.get(product_id, 0)}")
         print(f"Reconciliation totals: {counts}")
         return counts
+
+    def batch_stock_check(self):
+        """Report branch/product stock whose batch totals do not match system stock."""
+        print("----- BATCH / STOCK CHECK -----")
+        mismatches = []
+        for branch_id, branch in self.branches.items():
+            for product_id, system_quantity in branch.get("inventory", {}).items():
+                batches_quantity = sum(
+                    int(batch.get("quantity", 0)) for batch in self.batches
+                    if batch.get("branch") == branch_id and batch.get("product") == product_id
+                    and self._is_whole_number(batch.get("quantity", 0))
+                )
+                if batches_quantity != system_quantity:
+                    row = {"branch": branch_id, "product": product_id,
+                           "system_stock": system_quantity, "batch_stock": batches_quantity}
+                    mismatches.append(row)
+                    print(f"MISMATCH: {branch_id}/{product_id} | System: {system_quantity} | Batch total: {batches_quantity}")
+        if not mismatches:
+            print("All tracked batch totals match system stock.")
+        return mismatches
 
     def dashboard(self, physical_stock=None):
         print(" INVENTORY MANAGEMENT DASHBOARD  ")
@@ -392,6 +535,7 @@ class InventoryManager:
         self.sales_analytics()
         self.low_stock_report()
         expiry = self.product_expiry()
+        self.batch_stock_check()
         reconciliation = self.reconcile_inventory(physical_stock)
         print(f"Expiry batches: {len(expiry)} | Critical: {sum(1 for b in expiry if b['status'] == 'Critical')} | Expired: {sum(1 for b in expiry if b['status'] == 'Expired')}")
         print(f"Reconciliation: {reconciliation}")
@@ -401,12 +545,15 @@ def main():
     except InventoryError as error:
         print(f"Could not start Inventory Management System: {error}")
         return
+    print("----- DEMO TRANSACTIONS -----")
+    demo_sale = {"id": "DEMO-SALE", "type": "sale", "branch": "B001",
+                 "product": "P001", "quantity": 1}
+    demo_invalid = {"id": "DEMO-INVALID", "type": "sale", "branch": "B001",
+                    "product": "P001", "quantity": 999999}
+    manager.process_transaction(demo_sale)
+    manager.process_transaction(demo_invalid)
     manager.dashboard()
-    try:
-        manager.save_data()
-        print("Data saved successfully to data.json")
-    except InventoryError as error:
-        print(f"Could not save data.json: {error}")
+    print("Demo changes are in memory only; data.json was not modified.")
 
 
 if __name__ == "__main__":
