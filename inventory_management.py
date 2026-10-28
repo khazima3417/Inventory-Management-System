@@ -1,7 +1,7 @@
 import json
 import math
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 class InventoryError(Exception):
     """Base error for inventory operations."""
@@ -86,10 +86,11 @@ class InventoryManager:
             transaction_id = transaction.get("id")
             if not isinstance(transaction_id, str) or not transaction_id.strip():
                 raise InventoryError(f"Transaction #{index} has an invalid ID.")
-            if transaction_id in seen_transaction_ids:
+            is_successful = transaction.get("status", "SUCCESS") == "SUCCESS"
+            if is_successful and transaction_id in seen_transaction_ids:
                 raise InventoryError(f"Duplicate stored transaction ID: {transaction_id}.")
-            seen_transaction_ids.add(transaction_id)
-            if transaction.get("status", "SUCCESS") == "SUCCESS":
+            if is_successful:
+                seen_transaction_ids.add(transaction_id)
                 product_id = transaction.get("product")
                 kind = transaction.get("type")
                 quantity = transaction.get("quantity")
@@ -109,8 +110,30 @@ class InventoryManager:
         for index, batch in enumerate(data["batches"], start=1):
             if not isinstance(batch, dict):
                 raise InventoryError(f"Batch #{index} must be a dictionary.")
-            if "expiry_date" not in batch and isinstance(batch.get("expiry_days"), (int, float)) and not isinstance(batch.get("expiry_days"), bool):
-                batch["expiry_date"] = (date.today() + timedelta(days=int(batch["expiry_days"]))).isoformat()
+            batch_id = batch.get("batch")
+            product_id = batch.get("product")
+            branch_id = batch.get("branch")
+            quantity = batch.get("quantity")
+            if not isinstance(batch_id, str) or not batch_id.strip():
+                raise InventoryError(f"Batch #{index} has an invalid batch ID.")
+            if product_id not in data["products"]:
+                raise InventoryError(f"Batch '{batch_id}' references an unknown product.")
+            if branch_id not in data["branches"]:
+                raise InventoryError(f"Batch '{batch_id}' references an unknown branch.")
+            if not self._is_whole_number(quantity):
+                raise InventoryError(f"Batch '{batch_id}' quantity must be a non-negative whole number.")
+            if "expiry_date" not in batch:
+                days = batch.get("expiry_days")
+                if not self._is_whole_number(days):
+                    raise InventoryError(f"Batch '{batch_id}' must have a valid expiry_date.")
+                batch["expiry_date"] = (date.today() + timedelta(days=int(days))).isoformat()
+            expiry = batch.get("expiry_date")
+            if not isinstance(expiry, str):
+                raise InventoryError(f"Batch '{batch_id}' expiry_date must be text in YYYY-MM-DD format.")
+            try:
+                date.fromisoformat(expiry)
+            except ValueError as error:
+                raise InventoryError(f"Batch '{batch_id}' has an invalid expiry_date; expected YYYY-MM-DD.") from error
         return data
     def save_data(self):
         self.data["products"] = self.products
@@ -159,7 +182,7 @@ class InventoryManager:
             return "Quantity must be a finite number."
         if quantity <= 0:
             return "Quantity must be greater than zero."
-        if not float(quantity).is_integer():
+        if not self._is_whole_number(quantity):
             return "Quantity must be a whole number."
         if kind == "transfer":
             for field in ("from_branch", "to_branch"):
@@ -197,7 +220,6 @@ class InventoryManager:
             saved["unit_price"] = product.get("price", 0)
             saved["unit_cost"] = product.get("cost", 0)
         self.transactions.append(saved)
-        print(f"{status}: {reason}")
         return saved
     def _reject(self, transaction, reason):
         if isinstance(transaction, dict):
@@ -210,9 +232,10 @@ class InventoryManager:
                 )
                 if not already_exists:
                     return self._record_result(transaction, "REJECTED", reason)
-        print(f"REJECTED: {reason}")
         return {"status": "REJECTED", "reason": reason, "transaction": transaction}
     def process_transaction(self, transaction):
+        # Work on a copy so callers keep their original input unchanged.
+        transaction = dict(transaction) if isinstance(transaction, dict) else transaction
         reason = self.validate_transaction(transaction)
         if reason != "Valid":
             return self._reject(transaction, reason)
@@ -239,30 +262,73 @@ class InventoryManager:
                     f"Return exceeds original sales. Maximum returnable: {remaining}, requested: {quantity}.",
                 )
         if kind in {"sale", "supplier_return"}:
-            self._consume_batches(branch_id, product_id, quantity)
+            batch_error = self._consume_batches(branch_id, product_id, quantity)
+            if batch_error:
+                return self._reject(transaction, batch_error)
         inventory = self.branches[branch_id].setdefault("inventory", {})
         current = inventory.get(product_id, 0)
         if kind in {"purchase", "customer_return"}:
+            tracked = any(b.get("branch") == branch_id and b.get("product") == product_id
+                          for b in self.batches)
+            if kind in {"purchase", "customer_return"} and tracked and transaction.get("expiry_date") is None:
+                return self._reject(transaction, "expiry_date is required when adding stock to a batch-tracked product.")
+            if transaction.get("expiry_date") is not None:
+                try:
+                    self._add_batch(transaction, branch_id, product_id, quantity)
+                except InventoryError as error:
+                    return self._reject(transaction, str(error))
             inventory[product_id] = current + quantity
-        else:  
+        else:
             inventory[product_id] = current - quantity
         return self._record_result(transaction, "SUCCESS", f"{kind.replace('_', ' ').title()} processed successfully.")
 
+    def _add_batch(self, transaction, branch_id, product_id, quantity):
+        """Create a batch for incoming stock when an expiry date is supplied."""
+        expiry = transaction.get("expiry_date")
+        if not isinstance(expiry, str):
+            raise InventoryError("expiry_date must be text in YYYY-MM-DD format.")
+        try:
+            date.fromisoformat(expiry)
+        except ValueError as error:
+            raise InventoryError("expiry_date must be text in YYYY-MM-DD format.") from error
+        batch_id = transaction.get("batch_id", f"BATCH-{transaction['id']}")
+        if not isinstance(batch_id, str) or not batch_id.strip() or any(
+            b.get("batch") == batch_id for b in self.batches
+        ):
+            raise InventoryError("A unique, non-empty batch_id is required.")
+        self.batches.append({"batch": batch_id, "product": product_id,
+                             "branch": branch_id, "quantity": quantity,
+                             "expiry_date": expiry})
+
     def _consume_batches(self, branch_id, product_id, quantity):
-        """Reduce tracked batches by earliest expiry first; leave untracked stock usable."""
+        """Consume non-expired tracked batches in FEFO order, or return an error."""
         candidates = [b for b in self.batches if b.get("branch") == branch_id
                       and b.get("product") == product_id and self._is_whole_number(b.get("quantity"))]
-        tracked = sum(int(b.get("quantity", 0)) for b in candidates)
-        remaining = min(int(quantity), tracked)
-        candidates.sort(key=lambda b: (b.get("expiry_date", "9999-12-31"),
-                                       b.get("expiry_days", 999999)))
+        if not candidates:
+            return None  # This product/branch is not batch-tracked.
+        today = date.today()
+        usable = []
         for batch in candidates:
+            try:
+                expiry = date.fromisoformat(batch["expiry_date"])
+            except (KeyError, TypeError, ValueError):
+                return f"Invalid expiry date in batch {batch.get('batch', 'unknown')}."
+            if expiry >= today and int(batch["quantity"]) > 0:
+                usable.append(batch)
+        usable.sort(key=lambda batch: batch["expiry_date"])
+        available = sum(int(batch["quantity"]) for batch in usable)
+        if available < quantity:
+            return (f"Insufficient unexpired batch stock. Available: {available}, "
+                    f"requested: {quantity}.")
+        remaining = int(quantity)
+        for batch in usable:
             if remaining <= 0:
                 break
-            available = int(batch.get("quantity", 0))
-            used = min(available, remaining)
-            batch["quantity"] = available - used
+            stock = int(batch["quantity"])
+            used = min(stock, remaining)
+            batch["quantity"] = stock - used
             remaining -= used
+        return None
 
     def transfer(self, transaction, validated=False):
         """Move stock atomically between two different branches."""
@@ -280,27 +346,42 @@ class InventoryManager:
                 transaction,
                 f"Insufficient source stock. Available: {available}, requested: {quantity}.",
             )
+        moved_batches, batch_error = self._move_batches(source, destination, product_id, quantity)
+        if batch_error:
+            return self._reject(transaction, batch_error)
         source_inventory = self.branches[source].setdefault("inventory", {})
         destination_inventory = self.branches[destination].setdefault("inventory", {})
         source_inventory[product_id] = available - quantity
         destination_inventory[product_id] = destination_inventory.get(product_id, 0) + quantity
-        remaining = quantity
+        self.batches.extend(moved_batches)
+        return self._record_result(transaction, "SUCCESS", "Transfer processed successfully.")
+    def _move_batches(self, source, destination, product_id, quantity):
+        """Build destination batches from unexpired source batches without mutating state."""
         candidates = [b for b in self.batches if b.get("branch") == source
                       and b.get("product") == product_id and self._is_whole_number(b.get("quantity"))]
-        candidates.sort(key=lambda b: (b.get("expiry_date", "9999-12-31"), b.get("expiry_days", 999999)))
+        if not candidates:
+            return [], None
+        today = date.today()
+        candidates = [b for b in candidates if date.fromisoformat(b["expiry_date"]) >= today]
+        candidates.sort(key=lambda batch: batch["expiry_date"])
+        if sum(int(b["quantity"]) for b in candidates) < quantity:
+            return [], "Insufficient unexpired batch stock for transfer."
+        remaining = quantity
+        moved_batches = []
         for batch in candidates:
             if remaining <= 0:
                 break
-            moved = min(int(batch.get("quantity", 0)), remaining)
+            moved = min(int(batch["quantity"]), remaining)
             if moved:
-                batch["quantity"] = int(batch.get("quantity", 0)) - moved
+                batch["quantity"] = int(batch["quantity"]) - moved
                 copied = dict(batch)
-                copied["batch"] = f"{batch.get('batch', 'BATCH')}-{destination}-{len(self.batches) + 1}"
+                copied["batch"] = f"{batch['batch']}-{destination}-{len(self.batches) + len(moved_batches) + 1}"
                 copied["branch"] = destination
                 copied["quantity"] = moved
-                self.batches.append(copied)
+                moved_batches.append(copied)
                 remaining -= moved
-        return self._record_result(transaction, "SUCCESS", "Transfer processed successfully.")
+        return moved_batches, None
+
     def remaining_returnable(self, product_id, branch_id=None):
         """Calculate successful sold units minus successful customer returns."""
         sold = returned = 0
@@ -323,12 +404,23 @@ class InventoryManager:
     def process_sale(self, transaction_id, branch, product, quantity):
         return self.process_transaction({"id": transaction_id, "type": "sale", "branch": branch,
                                          "product": product, "quantity": quantity})
-    def process_purchase(self, transaction_id, branch, product, quantity):
-        return self.process_transaction({"id": transaction_id, "type": "purchase", "branch": branch,
-                                         "product": product, "quantity": quantity})
-    def process_customer_return(self, transaction_id, branch, product, quantity):
-        return self.process_transaction({"id": transaction_id, "type": "customer_return", "branch": branch,
-                                         "product": product, "quantity": quantity})
+    def process_purchase(self, transaction_id, branch, product, quantity, expiry_date=None, batch_id=None):
+        transaction = {"id": transaction_id, "type": "purchase", "branch": branch,
+                       "product": product, "quantity": quantity}
+        if expiry_date is not None:
+            transaction["expiry_date"] = expiry_date
+        if batch_id is not None:
+            transaction["batch_id"] = batch_id
+        return self.process_transaction(transaction)
+
+    def process_customer_return(self, transaction_id, branch, product, quantity, expiry_date=None, batch_id=None):
+        transaction = {"id": transaction_id, "type": "customer_return", "branch": branch,
+                       "product": product, "quantity": quantity}
+        if expiry_date is not None:
+            transaction["expiry_date"] = expiry_date
+        if batch_id is not None:
+            transaction["batch_id"] = batch_id
+        return self.process_transaction(transaction)
     def process_supplier_return(self, transaction_id, branch, product, quantity):
         return self.process_transaction({"id": transaction_id, "type": "supplier_return", "branch": branch,
                                          "product": product, "quantity": quantity})
@@ -450,7 +542,10 @@ class InventoryManager:
         print(f"Total units sold: {total_units}")
         result = {"revenue": total_revenue, "cost": total_cost,
                   "gross_profit": total_revenue - total_cost, "units": total_units}
-        if not self.products:
+        if not self.products or not any(product_units.values()):
+            result["best_product"] = None
+            result["worst_product"] = None
+            print("No sales yet")
             return result
         best = max(product_units, key=product_units.get)
         worst = min(product_units, key=product_units.get)
@@ -508,8 +603,12 @@ class InventoryManager:
         """Report branch/product stock whose batch totals do not match system stock."""
         print("----- BATCH / STOCK CHECK -----")
         mismatches = []
+        tracked_pairs = {(batch.get("branch"), batch.get("product")) for batch in self.batches
+                         if isinstance(batch, dict)}
         for branch_id, branch in self.branches.items():
             for product_id, system_quantity in branch.get("inventory", {}).items():
+                if (branch_id, product_id) not in tracked_pairs:
+                    continue
                 batches_quantity = sum(
                     int(batch.get("quantity", 0)) for batch in self.batches
                     if batch.get("branch") == branch_id and batch.get("product") == product_id
@@ -540,20 +639,61 @@ class InventoryManager:
         print(f"Expiry batches: {len(expiry)} | Critical: {sum(1 for b in expiry if b['status'] == 'Critical')} | Expired: {sum(1 for b in expiry if b['status'] == 'Expired')}")
         print(f"Reconciliation: {reconciliation}")
 def main():
+    """Run a small interactive command-line inventory tool."""
     try:
         manager = InventoryManager()
     except InventoryError as error:
         print(f"Could not start Inventory Management System: {error}")
         return
-    print("----- DEMO TRANSACTIONS -----")
-    demo_sale = {"id": "DEMO-SALE", "type": "sale", "branch": "B001",
-                 "product": "P001", "quantity": 1}
-    demo_invalid = {"id": "DEMO-INVALID", "type": "sale", "branch": "B001",
-                    "product": "P001", "quantity": 999999}
-    manager.process_transaction(demo_sale)
-    manager.process_transaction(demo_invalid)
-    manager.dashboard()
-    print("Demo changes are in memory only; data.json was not modified.")
+
+    while True:
+        print("\n===== INVENTORY MANAGEMENT =====")
+        print("1. Sale")
+        print("2. Purchase")
+        print("3. Customer return")
+        print("4. Supplier return")
+        print("5. Transfer")
+        print("6. Dashboard / reports")
+        print("7. Save and exit")
+        choice = input("Choose an option: ").strip()
+        if choice == "7":
+            try:
+                manager.save_data()
+                print("Data saved. Goodbye!")
+            except InventoryError as error:
+                print(error)
+            return
+        if choice == "6":
+            manager.dashboard()
+            continue
+        if choice not in {"1", "2", "3", "4", "5"}:
+            print("Invalid option. Choose 1-7.")
+            continue
+        try:
+            transaction_id = input("Transaction ID: ").strip()
+            product = input("Product ID: ").strip()
+            quantity = int(input("Quantity (whole number): ").strip())
+            if choice == "5":
+                transaction = {"id": transaction_id, "type": "transfer", "product": product,
+                               "quantity": quantity, "from_branch": input("From branch ID: ").strip(),
+                               "to_branch": input("To branch ID: ").strip()}
+            else:
+                branch = input("Branch ID: ").strip()
+                kind = {"1": "sale", "2": "purchase", "3": "customer_return",
+                        "4": "supplier_return"}[choice]
+                transaction = {"id": transaction_id, "type": kind, "product": product,
+                               "quantity": quantity, "branch": branch}
+                if kind == "purchase" and any(
+                    b.get("branch") == branch and b.get("product") == product for b in manager.batches
+                ):
+                    transaction["expiry_date"] = input("Batch expiry date (YYYY-MM-DD): ").strip()
+                    transaction["batch_id"] = input("New batch ID: ").strip()
+            result = manager.process_transaction(transaction)
+            print(f"{result['status']}: {result['reason']}")
+        except (ValueError, EOFError, KeyboardInterrupt):
+            print("Invalid input or cancelled operation.")
+        except InventoryError as error:
+            print(error)
 
 
 if __name__ == "__main__":

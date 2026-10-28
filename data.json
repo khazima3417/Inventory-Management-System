@@ -43,7 +43,7 @@
             "name": "Islamabad Branch",
             "inventory": {
                 "P001": 40,
-                "P002": 10,
+                "P002": 20,
                 "P003": 25,
                 "P004": 60
             }
@@ -64,21 +64,27 @@
             "type": "sale",
             "branch": "B001",
             "product": "P001",
-            "quantity": 5
+            "quantity": 5,
+            "unit_price": 100,
+            "unit_cost": 70
         },
         {
             "id": "T002",
             "type": "purchase",
             "branch": "B002",
             "product": "P002",
-            "quantity": 20
+            "quantity": 20,
+            "unit_price": 250,
+            "unit_cost": 180
         },
         {
             "id": "T003",
             "type": "sale",
             "branch": "B003",
             "product": "P004",
-            "quantity": 25
+            "quantity": 25,
+            "unit_price": 50,
+            "unit_cost": 25
         },
         {
             "id": "T004",
@@ -86,7 +92,22 @@
             "from_branch": "B001",
             "to_branch": "B002",
             "product": "P001",
-            "quantity": 10
+            "quantity": 10,
+            "unit_price": 100,
+            "unit_cost": 70
+        },
+        {
+            "id": "T005",
+            "type": "purchase",
+            "product": "P002",
+            "quantity": 10,
+            "branch": "B002",
+            "expiry_date": "2027-10-28",
+            "batch_id": "BAT004",
+            "status": "SUCCESS",
+            "reason": "Purchase processed successfully.",
+            "unit_price": 250,
+            "unit_cost": 180
         }
     ],
     "batches": [
@@ -95,21 +116,31 @@
             "product": "P001",
             "branch": "B001",
             "quantity": 20,
-            "expiry_days": 15
+            "expiry_days": 15,
+            "expiry_date": "2026-11-12"
         },
         {
             "batch": "BAT002",
             "product": "P001",
             "branch": "B001",
             "quantity": 30,
-            "expiry_days": 120
+            "expiry_days": 120,
+            "expiry_date": "2027-02-25"
         },
         {
             "batch": "BAT003",
             "product": "P002",
             "branch": "B002",
             "quantity": 10,
-            "expiry_days": 5
+            "expiry_days": 5,
+            "expiry_date": "2026-11-02"
+        },
+        {
+            "batch": "BAT004",
+            "product": "P002",
+            "branch": "B002",
+            "quantity": 10,
+            "expiry_date": "2027-10-28"
         }
     ],
     "physical_stock": {
