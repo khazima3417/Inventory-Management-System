@@ -131,19 +131,16 @@ class InventoryManagerTests(unittest.TestCase):
         self.assertEqual(report["units"], 0)
         self.assertIsNone(report["best_product"])
         self.assertIsNone(report["worst_product"])
-
     def test_empty_batches_report_does_not_crash(self):
         self.manager.batches = []
         with redirect_stdout(StringIO()):
             report = self.manager.product_expiry()
         self.assertEqual(report, [])
-
     def test_unknown_batch_is_reported_without_crash(self):
         self.manager.batches = [{"batch": "BAT-UNKNOWN", "product": "P999", "branch": "B001", "expiry_days": 3}]
         with redirect_stdout(StringIO()):
             report = self.manager.product_expiry()
         self.assertIn("unknown product or branch", report[0]["status"])
-
     def test_duplicate_batch_id_is_reported(self):
         self.manager.batches = [
             {"batch": "DUP", "product": "P001", "branch": "B001", "expiry_days": 5},
@@ -187,13 +184,11 @@ class InventoryManagerTests(unittest.TestCase):
             saved = json.load(file)
         rejected = next(item for item in saved["transactions"] if item.get("id") == "TEST-NAN-SAVE")
         self.assertEqual(rejected["quantity"], "nan")
-
     def test_rejected_transaction_id_can_be_reused(self):
         first = self.manager.process_transaction(self.transaction("RETRY-ME", quantity=999))
         second = self.manager.process_transaction(self.transaction("RETRY-ME", quantity=1))
         self.assertEqual(first["status"], "REJECTED")
         self.assertEqual(second["status"], "SUCCESS")
-
     def test_customer_returns_reduce_net_sales_analytics(self):
         self.manager.transactions = []
         with redirect_stdout(StringIO()):
@@ -247,7 +242,6 @@ class InventoryManagerTests(unittest.TestCase):
         self.assertEqual(result["status"], "SUCCESS")
         self.assertEqual(self.manager.batches[0]["quantity"], 20)
         self.assertEqual(self.manager.batches[1]["quantity"], 15)
-
     def test_sale_rejected_when_unexpired_batches_are_insufficient(self):
         self.manager.batches = [
             {"batch": "OLD", "product": "P001", "branch": "B001", "quantity": 20,
@@ -256,21 +250,18 @@ class InventoryManagerTests(unittest.TestCase):
         result = self.manager.process_transaction(self.transaction("EXPIRED-ONLY", quantity=1))
         self.assertEqual(result["status"], "REJECTED")
         self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], 40)
-
     def test_badly_typed_batch_expiry_is_rejected_on_load(self):
         raw = json.loads(self.data_file.read_text(encoding="utf-8"))
         raw["batches"][0]["expiry_date"] = 20250101
         self.data_file.write_text(json.dumps(raw), encoding="utf-8")
         with self.assertRaisesRegex(InventoryError, "expiry_date must be text"):
             InventoryManager(self.data_file)
-
     def test_process_transaction_does_not_mutate_input(self):
         transaction = self.transaction("COPY-INPUT", kind="purchase", quantity=5.0,
                                        expiry_date="2027-12-31")
         original = dict(transaction)
         self.manager.process_transaction(transaction)
         self.assertEqual(transaction, original)
-
     def test_purchase_creates_expiry_batch(self):
         result = self.manager.process_transaction(self.transaction(
             "PURCHASE-BATCH", kind="purchase", quantity=3, expiry_date="2027-12-31"
@@ -279,6 +270,37 @@ class InventoryManagerTests(unittest.TestCase):
         batch = next(b for b in self.manager.batches if b.get("batch") == "BATCH-PURCHASE-BATCH")
         self.assertEqual(batch["quantity"], 3)
         self.assertEqual(batch["expiry_date"], "2027-12-31")
+    def test_supplier_return_can_remove_expired_batch_stock(self):
+        self.manager.batches = [
+            {"batch": "EXPIRED", "product": "P001", "branch": "B001",
+             "quantity": 5, "expiry_date": "2020-01-01"}
+        ]
+        result = self.manager.process_transaction(self.transaction(
+            "SUPPLIER-EXPIRED", kind="supplier_return", quantity=2
+        ))
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(self.manager.batches[0]["quantity"], 3)
 
+    def test_batch_expiring_today_is_not_sellable_or_reported_safe(self):
+        today = __import__("datetime").date.today().isoformat()
+        self.manager.batches = [
+            {"batch": "TODAY", "product": "P001", "branch": "B001",
+             "quantity": 40, "expiry_date": today}
+        ]
+        result = self.manager.process_transaction(self.transaction("SALE-TODAY", quantity=1))
+        self.assertEqual(result["status"], "REJECTED")
+        with redirect_stdout(StringIO()):
+            report = self.manager.product_expiry()
+        self.assertEqual(report[0]["status"], "Critical")
+    def test_dispose_expired_stock_reduces_inventory_and_batch(self):
+        self.manager.batches = [
+            {"batch": "EXPIRED", "product": "P001", "branch": "B001",
+             "quantity": 4, "expiry_date": "2020-01-01"}
+        ]
+        before = self.manager.branches["B001"]["inventory"]["P001"]
+        result = self.manager.dispose_expired_stock("WRITE-OFF-1", "B001", "P001", 2)
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], before - 2)
+        self.assertEqual(self.manager.batches[0]["quantity"], 2)
 if __name__ == "__main__":
     unittest.main(verbosity=2)
