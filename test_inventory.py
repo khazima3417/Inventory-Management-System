@@ -291,7 +291,7 @@ class InventoryManagerTests(unittest.TestCase):
         self.assertEqual(result["status"], "REJECTED")
         with redirect_stdout(StringIO()):
             report = self.manager.product_expiry()
-        self.assertEqual(report[0]["status"], "Critical")
+        self.assertEqual(report[0]["status"], "Expired")
     def test_dispose_expired_stock_reduces_inventory_and_batch(self):
         self.manager.batches = [
             {"batch": "EXPIRED", "product": "P001", "branch": "B001",
@@ -302,5 +302,39 @@ class InventoryManagerTests(unittest.TestCase):
         self.assertEqual(result["status"], "SUCCESS")
         self.assertEqual(self.manager.branches["B001"]["inventory"]["P001"], before - 2)
         self.assertEqual(self.manager.batches[0]["quantity"], 2)
+    def test_disposal_saves_and_reloads(self):
+        self.manager.batches = [
+            {"batch": "EXPIRED", "product": "P001", "branch": "B001",
+             "quantity": 4, "expiry_date": "2020-01-01"}
+        ]
+        result = self.manager.dispose_expired_stock("WRITE-OFF-RELOAD", "B001", "P001", 2)
+        self.assertEqual(result["status"], "SUCCESS")
+        self.manager.save_data()
+        reloaded = InventoryManager(self.data_file)
+        saved = next(item for item in reloaded.transactions
+                     if item.get("id") == "WRITE-OFF-RELOAD")
+        self.assertEqual(saved["type"], "write_off")
+        self.assertEqual(reloaded.branches["B001"]["inventory"]["P001"], 38)
+        self.assertEqual(reloaded.batches[0]["quantity"], 2)
+
+    def test_disposal_rejects_duplicate_and_empty_ids(self):
+        self.manager.batches = [
+            {"batch": "EXPIRED", "product": "P001", "branch": "B001",
+             "quantity": 4, "expiry_date": "2020-01-01"}
+        ]
+        first = self.manager.dispose_expired_stock("DUPLICATE-ID", "B001", "P001", 1)
+        duplicate = self.manager.dispose_expired_stock("DUPLICATE-ID", "B001", "P001", 1)
+        empty = self.manager.dispose_expired_stock("", "B001", "P001", 1)
+        self.assertEqual(first["status"], "SUCCESS")
+        self.assertEqual(duplicate["status"], "REJECTED")
+        self.assertEqual(empty["status"], "REJECTED")
+        rejected = self.manager.dispose_expired_stock(
+            "NO-EXPIRED-STOCK", "B001", "P001", 99
+        )
+        self.assertEqual(rejected["status"], "REJECTED")
+        self.assertTrue(any(item.get("id") == "NO-EXPIRED-STOCK"
+                            and item.get("status") == "REJECTED"
+                            for item in self.manager.transactions))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
